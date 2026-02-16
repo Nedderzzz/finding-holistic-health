@@ -1,0 +1,23 @@
+[nix]
+channel = "stable-24_11"
+
+[env]
+NODE_ENV = "development"
+DATABASE_URL = "file:./data/dev.db"
+
+[unitTest]
+language = "nodejs"
+
+[languages.javascript]
+pattern = "**/{*.js,*.jsx,*.ts,*.tsx}"
+
+[languages.javascript.languageServer]
+start = "typescript-language-server --stdio"
+
+[deployment]
+run = ["sh", "-c", "npm run build && npm start"]
+build = ["npm", "install"]
+
+[[ports]]
+localPort = 3000
+externalPort = 3000
