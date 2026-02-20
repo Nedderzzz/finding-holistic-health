@@ -96,7 +96,34 @@ LOW_POP_STATES = [
     'IA', 'NV', 'AR', 'MS', 'KS', 'NM', 'NE', 'ID', 'WV', 'HI',
     'NH', 'ME', 'MT', 'RI', 'DE', 'SD', 'ND', 'AK', 'VT', 'WY'
 ]
-
+# Major cities by state for targeted searches
+STATE_CITIES = {
+    'CA': ['Los Angeles', 'San Francisco', 'San Diego', 'Sacramento', 'San Jose'],
+    'TX': ['Houston', 'Dallas', 'Austin', 'San Antonio', 'Fort Worth'],
+    'FL': ['Miami', 'Tampa', 'Orlando', 'Jacksonville'],
+    'NY': ['New York', 'Buffalo', 'Rochester', 'Syracuse'],
+    'PA': ['Philadelphia', 'Pittsburgh', 'Allentown'],
+    'IL': ['Chicago', 'Aurora', 'Naperville'],
+    'OH': ['Columbus', 'Cleveland', 'Cincinnati'],
+    'GA': ['Atlanta', 'Augusta', 'Savannah'],
+    'NC': ['Charlotte', 'Raleigh', 'Greensboro'],
+    'MI': ['Detroit', 'Grand Rapids', 'Ann Arbor'],
+    'NJ': ['Newark', 'Jersey City', 'Paterson'],
+    'VA': ['Virginia Beach', 'Norfolk', 'Richmond'],
+    'WA': ['Seattle', 'Spokane', 'Tacoma'],
+    'AZ': ['Phoenix', 'Tucson', 'Mesa'],
+    'MA': ['Boston', 'Worcester', 'Springfield'],
+    'CO': ['Denver', 'Colorado Springs', 'Aurora'],
+    'MN': ['Minneapolis', 'Saint Paul', 'Rochester'],
+    'SC': ['Charleston', 'Columbia', 'Greenville'],
+    'AL': ['Birmingham', 'Montgomery', 'Mobile'],
+    'LA': ['New Orleans', 'Baton Rouge', 'Shreveport'],
+    'KY': ['Louisville', 'Lexington', 'Bowling Green'],
+    'OR': ['Portland', 'Salem', 'Eugene'],
+    'OK': ['Oklahoma City', 'Tulsa', 'Norman'],
+    'CT': ['Bridgeport', 'New Haven', 'Hartford'],
+    'UT': ['Salt Lake City', 'Provo', 'West Jordan'],
+}
 
 @dataclass
 class Provider:
@@ -126,9 +153,17 @@ class Provider:
 class ProviderScraper:
     """Scrape healthcare provider information from Google Maps Places API."""
     
-    def __init__(self, output_file: str = 'scraped_providers.csv'):
+    def __init__(self, output_file: str = None):
+        # Auto-generate timestamped filename if not provided
+        if output_file is None:
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            output_dir = 'data/scraped'
+            os.makedirs(output_dir, exist_ok=True)
+            output_file = f"{output_dir}/providers_{timestamp}.csv"
+        
         self.output_file = output_file
         self.providers: Dict[str, Provider] = {}  # Use dict to deduplicate
+        self.existing_keys: set = set()  # Keys from previous scrapes
         self.geocoder = Nominatim(user_agent="finding_health_scraper")
         self.session = requests.Session()
         self.session.headers.update({
@@ -140,14 +175,49 @@ class ProviderScraper:
         
         if not self.google_api_key:
             logger.warning("Google Maps API key not found. Set GOOGLE_MAPS_API_KEY environment variable.")
+        
+        # Load existing providers from master CSV to avoid duplicates
+        self._load_existing_providers()
+    
+    def _load_existing_providers(self):
+        """Load existing providers from master CSV to avoid duplicates."""
+        master_csv = 'data/providers_master.csv'
+        
+        if not os.path.exists(master_csv):
+            logger.info("No existing master CSV found - will create new one")
+            return
+        
+        try:
+            with open(master_csv, 'r', encoding='utf-8', newline='') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    # Generate key same way as generate_provider_key
+                    business = row.get('businessName', '').lower().strip()
+                    city = row.get('city', '').lower().strip()
+                    state = row.get('state', '').upper().strip()
+                    
+                    if business and city and state:
+                        key = f"{business}_{city}_{state}"
+                        self.existing_keys.add(key)
+            
+            logger.info(f"Loaded {len(self.existing_keys)} existing providers from master CSV - will skip duplicates")
+        except Exception as e:
+            logger.warning(f"Could not load existing providers: {e}")
     
     def generate_provider_key(self, provider: Provider) -> str:
         """Generate a unique key for deduplication."""
         return f"{provider.businessName.lower()}_{provider.city.lower()}_{provider.state.lower()}"
     
     def add_provider(self, provider: Provider):
-        """Add provider to collection, avoiding duplicates."""
+        """Add provider to collection, avoiding duplicates from current run and previous scrapes."""
         key = self.generate_provider_key(provider)
+        
+        # Check if already exists in previous scrapes
+        if key in self.existing_keys:
+            logger.debug(f"Skipped (already scraped): {provider.businessName}")
+            return
+        
+        # Check if already added in this run
         if key not in self.providers:
             self.providers[key] = provider
             logger.info(f"Added: {provider.businessName} in {provider.city}, {provider.state}")
@@ -169,72 +239,79 @@ class ProviderScraper:
             logger.warning("Google Maps API key not set. Skipping Google Places.")
             return 0
         
+        # Get cities for this state
+        cities = STATE_CITIES.get(state, [state])  # Fall back to state name if no cities defined
+        
         added = 0
         try:
-            # Search query
-            search_query = f"{specialty} provider"
-            if state:
-                search_query += f" {state}"
-            
-            url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
-            params = {
-                'query': search_query,
-                'key': self.google_api_key,
-                'type': 'health',
-            }
-            
-            logger.info(f"Searching Google Places for '{specialty}' in {state or 'all US'}...")
-            
-            response = self.session.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            
-            if data['status'] != 'OK':
-                if data['status'] == 'ZERO_RESULTS':
-                    logger.debug(f"No results for {specialty} in {state}")
-                else:
-                    logger.warning(f"Google Places API error: {data.get('status', 'Unknown')}")
-                return 0
-            
-            for result in data.get('results', []):
-                try:
-                    # Extract phone and website (may not be in text search results)
-                    phone = result.get('formatted_phone_number', '').replace('(', '').replace(')', '').replace('-', '').replace(' ', '')
-                    
-                    # Parse address
-                    address_parts = result.get('formatted_address', '').split(',')
-                    address_line1 = address_parts[0].strip() if address_parts else ''
-                    
-                    # Extract city, state, zip from address
-                    city, state_code, zip_code = self.parse_address(result.get('formatted_address', ''))
-                    
-                    if not city or not state_code:
-                        logger.debug(f"Skipped {result['name']} - invalid address")
-                        continue
-                    
-                    provider = Provider(
-                        businessName=result['name'],
-                        specialties=specialty,
-                        addressLine1=address_line1,
-                        city=city,
-                        state=state_code,
-                        zip=zip_code,
-                        phone=phone,
-                        website=result.get('website', ''),
-                        latitude=result['geometry']['location']['lat'],
-                        longitude=result['geometry']['location']['lng'],
-                        source='Google Places'
-                    )
-                    
-                    self.add_provider(provider)
-                    added += 1
-                    time.sleep(0.5)  # Rate limiting
-                    
-                except Exception as e:
-                    logger.debug(f"Error processing Google result: {e}")
+            for city in cities:
+                # Search in specific city
+                search_query = f"{specialty} {city} {state}"
+                url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
+                params = {
+                    'query': search_query,
+                    'key': self.google_api_key,
+                }
+                
+                logger.info(f"Searching: '{search_query}'...")
+                
+                response = self.session.get(url, params=params, timeout=10)
+                response.raise_for_status()
+                data = response.json()
+                
+                logger.info(f"  API Status: {data.get('status')}, Results: {len(data.get('results', []))}")
+                
+                if data['status'] != 'OK':
+                    if data['status'] == 'ZERO_RESULTS':
+                        logger.debug(f"No results for: {search_query}")
+                    else:
+                        logger.warning(f"Google Places API error: {data.get('status', 'Unknown')}")
                     continue
+                
+                for result in data.get('results', []):
+                    try:
+                        logger.debug(f"Processing: {result.get('name', 'Unknown')}")
+                        
+                        # Extract phone and website (may not be in text search results)
+                        phone = result.get('formatted_phone_number', '').replace('(', '').replace(')', '').replace('-', '').replace(' ', '')
+                        
+                        # Parse address
+                        address_parts = result.get('formatted_address', '').split(',')
+                        address_line1 = address_parts[0].strip() if address_parts else ''
+                        
+                        # Extract city, state, zip from address
+                        parsed_city, state_code, zip_code = self.parse_address(result.get('formatted_address', ''))
+                        
+                        logger.debug(f"  Address parsed - City: {parsed_city}, State: {state_code}, Zip: {zip_code}")
+                        
+                        if not parsed_city or not state_code:
+                            logger.debug(f"  Skipped {result.get('name')} - invalid address")
+                            continue
+                        
+                        provider = Provider(
+                            businessName=result['name'],
+                            specialties=specialty,
+                            addressLine1=address_line1,
+                            city=parsed_city,
+                            state=state_code,
+                            zip=zip_code,
+                            phone=phone,
+                            website=result.get('website', ''),
+                            latitude=result['geometry']['location']['lat'],
+                            longitude=result['geometry']['location']['lng'],
+                            source='Google Places'
+                        )
+                        
+                        self.add_provider(provider)
+                        added += 1
+                        
+                    except Exception as e:
+                        logger.debug(f"Error processing Google result: {e}")
+                        continue
+                
+                time.sleep(1.5)  # Rate limiting between city searches
             
-            logger.info(f"Found {added} providers from Google Places")
+            logger.info(f"Found {added} providers total from Google Places")
             return added
             
         except requests.RequestException as e:
@@ -249,26 +326,33 @@ class ProviderScraper:
             Tuple of (city, state, zip_code)
         """
         try:
-            # Format is typically: Street, City, State ZIP
+            logger.debug(f"    Parsing address: {formatted_address}")
+            
+            # Format is typically: Street, City, State ZIP, Country
             parts = [p.strip() for p in formatted_address.split(',')]
             
             if len(parts) < 2:
                 return '', '', ''
             
-            # Last part usually has state and zip
-            last_part = parts[-1]
-            # Extract state code (2 letters) and zip
-            match = re.search(r'([A-Z]{2})\s+(\d{5}(?:-\d{4})?)', last_part)
+            # Last part usually has state and zip (or just USA)
+            # Second to last usually has "State ZIP"
+            state_zip_part = parts[-2] if len(parts) >= 3 else parts[-1]
+            
+            # Extract state code (2 letters) and zip - case insensitive
+            match = re.search(r'([A-Za-z]{2})\s+(\d{5}(?:-\d{4})?)', state_zip_part)
             
             if match:
-                state = match.group(1)
+                state = match.group(1).upper()
                 zip_code = match.group(2)
-                city = parts[-2].strip() if len(parts) >= 2 else ''
+                # City is the part before state_zip_part
+                city_index = parts.index(state_zip_part) - 1
+                city = parts[city_index].strip() if city_index >= 0 and city_index < len(parts) else ''
+                logger.debug(f"    Extracted - City: {city}, State: {state}, Zip: {zip_code}")
                 return city, state, zip_code
             
             return '', '', ''
         except Exception as e:
-            logger.debug(f"Error parsing address: {e}")
+            logger.debug(f"    Error parsing address: {e}")
             return '', '', ''
     
     def geocode_address(self, city: str, state: str) -> Optional[Tuple[float, float]]:
@@ -301,10 +385,11 @@ class ProviderScraper:
         if limit_states:
             return limit_states
         
-        # 65% from high population states
-        high_pop_count = int(len(HIGH_POP_STATES) * 0.65)
-        # 35% from low population states
-        low_pop_count = int(len(LOW_POP_STATES) * 0.35)
+        # Select subset of states with 65% high-pop, 35% low-pop distribution
+        # Use 20 total states: 13 high-pop (65%), 7 low-pop (35%)
+        total_states = 20
+        high_pop_count = int(total_states * 0.65)  # 13 states
+        low_pop_count = total_states - high_pop_count  # 7 states
         
         weighted_states = HIGH_POP_STATES[:high_pop_count] + LOW_POP_STATES[:low_pop_count]
         return weighted_states
@@ -470,8 +555,8 @@ def main():
     )
     parser.add_argument(
         '--output', '-o',
-        default='scraped_providers.csv',
-        help='Output CSV file path (default: scraped_providers.csv)'
+        default=None,
+        help='Output CSV file path (default: auto-generated timestamped file in data/scraped/)'
     )
     parser.add_argument(
         '--states', '-s',
