@@ -39,8 +39,3 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
-
-# scraper data
-data/scraped/
-data/providers_master.csv
-test_api.py
