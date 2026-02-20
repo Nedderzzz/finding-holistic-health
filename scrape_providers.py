@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
 Healthcare Provider Scraper
-Scrapes holistic healthcare provider information from multiple real APIs.
+Scrapes holistic healthcare provider information from Google Maps Places API.
 
-Status Values:
-- PENDING: Initial status when providers are imported (not shown on site)
-- APPROVED: Provider is visible and searchable on the site
-- REJECTED: Provider was rejected and will not appear on site
+Configuration:
+- 80% Functional Medicine & Naturopathy
+- 20% Chiropractic & other alternative specialties  
+- 65% high population states, 35% lower population states
+- Yelp API disabled
 
-Required API Keys (set as environment variables or in .env file):
+Required API Key (set in .env file):
 - GOOGLE_MAPS_API_KEY: Get from https://cloud.google.com/maps-platform
-- YELP_API_KEY: Get from https://www.yelp.com/developers
 
 Installation:
 pip install requests geopy python-dotenv
@@ -45,23 +45,27 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Holistic healthcare specialties to search for
-SPECIALTIES = [
-    'Acupuncture',
-    'Naturopathy',
-    'Chiropractic',
+# Holistic healthcare specialties with weighted distribution
+# Primary focus: Functional Medicine & Naturopathy (80%)
+PRIMARY_SPECIALTIES = [
     'Functional Medicine',
+    'Naturopathy',
+]
+
+# Secondary focus: Chiropractic & Alternative (20%)
+SECONDARY_SPECIALTIES = [
+    'Chiropractic',
+    'Acupuncture',
+    'Integrative Medicine',
     'Herbalism',
     'Massage Therapy',
-    'Nutritionist',
-    'Integrative Medicine',
+    'Traditional Chinese Medicine',
     'Ayurveda',
     'Homeopathy',
-    'Reiki',
-    'Traditional Chinese Medicine',
-    'Yoga Therapy',
-    'Holistic Wellness',
 ]
+
+# All specialties combined
+SPECIALTIES = PRIMARY_SPECIALTIES + SECONDARY_SPECIALTIES
 
 # US States
 US_STATES = {
@@ -79,6 +83,19 @@ US_STATES = {
     'VT': 'Vermont', 'VA': 'Virginia', 'WA': 'Washington', 'WV': 'West Virginia',
     'WI': 'Wisconsin', 'WY': 'Wyoming',
 }
+
+# High population states (65% of searches)
+HIGH_POP_STATES = [
+    'CA', 'TX', 'FL', 'NY', 'PA', 'IL', 'OH', 'GA', 'NC', 'MI',
+    'NJ', 'VA', 'WA', 'AZ', 'MA', 'TN', 'IN', 'MD', 'MO', 'WI'
+]
+
+# Lower population states (35% of searches)
+LOW_POP_STATES = [
+    'CO', 'MN', 'SC', 'AL', 'LA', 'KY', 'OR', 'OK', 'CT', 'UT',
+    'IA', 'NV', 'AR', 'MS', 'KS', 'NM', 'NE', 'ID', 'WV', 'HI',
+    'NH', 'ME', 'MT', 'RI', 'DE', 'SD', 'ND', 'AK', 'VT', 'WY'
+]
 
 
 @dataclass
@@ -107,7 +124,7 @@ class Provider:
 
 
 class ProviderScraper:
-    """Scrape healthcare provider information from multiple real APIs."""
+    """Scrape healthcare provider information from Google Maps Places API."""
     
     def __init__(self, output_file: str = 'scraped_providers.csv'):
         self.output_file = output_file
@@ -118,12 +135,11 @@ class ProviderScraper:
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         })
         
-        # API Keys
+        # API Key
         self.google_api_key = os.getenv('GOOGLE_MAPS_API_KEY')
-        self.yelp_api_key = os.getenv('YELP_API_KEY')
         
-        if not self.google_api_key and not self.yelp_api_key:
-            logger.warning("No API keys found. Set GOOGLE_MAPS_API_KEY and/or YELP_API_KEY environment variables.")
+        if not self.google_api_key:
+            logger.warning("Google Maps API key not found. Set GOOGLE_MAPS_API_KEY environment variable.")
     
     def generate_provider_key(self, provider: Provider) -> str:
         """Generate a unique key for deduplication."""
@@ -174,12 +190,15 @@ class ProviderScraper:
             data = response.json()
             
             if data['status'] != 'OK':
-                logger.warning(f"Google Places API error: {data.get('status', 'Unknown')}")
+                if data['status'] == 'ZERO_RESULTS':
+                    logger.debug(f"No results for {specialty} in {state}")
+                else:
+                    logger.warning(f"Google Places API error: {data.get('status', 'Unknown')}")
                 return 0
             
             for result in data.get('results', []):
                 try:
-                    # Extract phone and website
+                    # Extract phone and website (may not be in text search results)
                     phone = result.get('formatted_phone_number', '').replace('(', '').replace(')', '').replace('-', '').replace(' ', '')
                     
                     # Parse address
@@ -222,83 +241,6 @@ class ProviderScraper:
             logger.error(f"Error calling Google Places API: {e}")
             return 0
     
-    def scrape_yelp(self, specialty: str, state: str = None) -> int:
-        """
-        Scrape from Yelp Fusion API.
-        
-        Args:
-            specialty: Type of provider to search for
-            state: Optional state to limit search
-        
-        Returns:
-            Number of providers found
-        """
-        if not self.yelp_api_key:
-            logger.warning("Yelp API key not set. Skipping Yelp.")
-            return 0
-        
-        added = 0
-        try:
-            # Search major cities in state, or nationally
-            cities_to_search = self.get_major_cities(state) if state else self.get_major_cities_us()
-            
-            for city in cities_to_search:
-                try:
-                    url = "https://api.yelp.com/v3/businesses/search"
-                    headers = {'Authorization': f'Bearer {self.yelp_api_key}'}
-                    
-                    params = {
-                        'term': specialty,
-                        'location': f"{city}, {state or 'USA'}",
-                        'limit': 50,
-                        'sort_by': 'rating',
-                    }
-                    
-                    logger.info(f"Searching Yelp for '{specialty}' in {city}...")
-                    
-                    response = self.session.get(url, headers=headers, params=params, timeout=10)
-                    response.raise_for_status()
-                    data = response.json()
-                    
-                    for business in data.get('businesses', []):
-                        try:
-                            location = business.get('location', {})
-                            
-                            provider = Provider(
-                                businessName=business['name'],
-                                specialties=specialty,
-                                addressLine1=location.get('address1', ''),
-                                city=location.get('city', ''),
-                                state=location.get('state', ''),
-                                zip=location.get('zip_code', ''),
-                                phone=business.get('phone', ''),
-                                website=business.get('url', ''),
-                                description=f"Yelp Rating: {business.get('rating', 'N/A')}/5 ({business.get('review_count', 0)} reviews)",
-                                latitude=business['coordinates']['latitude'],
-                                longitude=business['coordinates']['longitude'],
-                                source='Yelp'
-                            )
-                            
-                            self.add_provider(provider)
-                            added += 1
-                            
-                        except Exception as e:
-                            logger.debug(f"Error processing Yelp result: {e}")
-                            continue
-                    
-                    time.sleep(1)  # Rate limiting between requests
-                    
-                except requests.RequestException as e:
-                    logger.debug(f"Error searching Yelp for {city}: {e}")
-                    continue
-            
-            logger.info(f"Found {added} providers from Yelp")
-            return added
-            
-        except Exception as e:
-            logger.error(f"Error with Yelp scraping: {e}")
-            return 0
-    
     def parse_address(self, formatted_address: str) -> Tuple[str, str, str]:
         """
         Parse formatted address string to extract city, state, zip.
@@ -329,28 +271,6 @@ class ProviderScraper:
             logger.debug(f"Error parsing address: {e}")
             return '', '', ''
     
-    def get_major_cities(self, state: str) -> List[str]:
-        """Get list of major cities for a state."""
-        major_cities = {
-            'CA': ['Los Angeles', 'San Francisco', 'San Diego', 'Sacramento'],
-            'TX': ['Houston', 'Austin', 'Dallas', 'San Antonio'],
-            'NY': ['New York', 'Buffalo', 'Rochester', 'Albany'],
-            'FL': ['Miami', 'Orlando', 'Tampa', 'Jacksonville'],
-            'IL': ['Chicago', 'Springfield', 'Naperville'],
-            'CO': ['Denver', 'Boulder', 'Colorado Springs'],
-            'WA': ['Seattle', 'Tacoma', 'Spokane'],
-            'OR': ['Portland', 'Eugene', 'Salem'],
-        }
-        return major_cities.get(state, [state])
-    
-    def get_major_cities_us(self) -> List[str]:
-        """Get list of major US cities for national search."""
-        return [
-            'New York', 'Los Angeles', 'Chicago', 'Houston', 'Phoenix',
-            'Philadelphia', 'San Antonio', 'San Diego', 'Dallas', 'San Jose',
-            'Denver', 'Portland', 'Seattle', 'Austin', 'Miami'
-        ]
-    
     def geocode_address(self, city: str, state: str) -> Optional[Tuple[float, float]]:
         """Get latitude and longitude for a city."""
         if not city or not state:
@@ -368,9 +288,58 @@ class ProviderScraper:
         
         return None
     
+    def get_weighted_states(self, limit_states: List[str] = None) -> List[str]:
+        """
+        Get weighted list of states (65% high pop, 35% low pop).
+        
+        Args:
+            limit_states: Optional list to limit states
+            
+        Returns:
+            Weighted list of state codes
+        """
+        if limit_states:
+            return limit_states
+        
+        # 65% from high population states
+        high_pop_count = int(len(HIGH_POP_STATES) * 0.65)
+        # 35% from low population states
+        low_pop_count = int(len(LOW_POP_STATES) * 0.35)
+        
+        weighted_states = HIGH_POP_STATES[:high_pop_count] + LOW_POP_STATES[:low_pop_count]
+        return weighted_states
+    
+    def get_weighted_specialties(self, limit_specialties: List[str] = None) -> Dict[str, int]:
+        """
+        Get weighted specialty distribution (80% primary, 20% secondary).
+        
+        Args:
+            limit_specialties: Optional list to limit specialties
+            
+        Returns:
+            Dict of specialty -> number of searches to perform
+        """
+        if limit_specialties:
+            # Use provided specialties with equal weight
+            return {s: 1 for s in limit_specialties}
+        
+        # 80% primary (Functional Medicine & Naturopathy)
+        # 20% secondary (split among others)
+        specialty_weights = {}
+        
+        # Each primary specialty gets 40% (80% / 2 specialties)
+        for specialty in PRIMARY_SPECIALTIES:
+            specialty_weights[specialty] = 4  # 4 searches per state
+        
+        # Each secondary specialty gets ~2.5% (20% / 8 specialties)
+        for specialty in SECONDARY_SPECIALTIES:
+            specialty_weights[specialty] = 1  # 1 search per state
+        
+        return specialty_weights
+    
     def scrape_all(self, limit_states: List[str] = None, limit_specialties: List[str] = None):
         """
-        Main scraping orchestrator.
+        Main scraping orchestrator with weighted distribution.
         
         Args:
             limit_states: List of state codes to limit scraping (e.g., ['CA', 'NY'])
@@ -380,48 +349,67 @@ class ProviderScraper:
         logger.info("Starting provider scraping...")
         logger.info("="*60)
         
-        states_to_search = limit_states or list(US_STATES.keys())[:10]  # Default: first 10 states
-        specialties_to_search = limit_specialties or SPECIALTIES[:5]  # Default: first 5 specialties
+        if not self.google_api_key:
+            logger.error("\nERROR: Google Maps API key not configured!")
+            logger.error("Set GOOGLE_MAPS_API_KEY environment variable.")
+            logger.error("\nGet API key from: https://cloud.google.com/maps-platform")
+            logger.error("\nAPI Restrictions to set:")
+            logger.error("  1. Application restrictions: None (or HTTP referrers if hosted)")
+            logger.error("  2. API restrictions: Restrict to 'Places API'")
+            return
+        
+        states_to_search = self.get_weighted_states(limit_states)
+        specialty_weights = self.get_weighted_specialties(limit_specialties)
+        
+        logger.info(f"\nSearching {len(states_to_search)} states")
+        logger.info(f"High population states (65%): {', '.join(states_to_search[:13])}")
+        logger.info(f"Lower population states (35%): {', '.join(states_to_search[13:])}")
+        logger.info(f"\nSpecialty distribution:")
+        logger.info(f"  Primary (80%): {', '.join(PRIMARY_SPECIALTIES)}")
+        logger.info(f"  Secondary (20%): {', '.join(SECONDARY_SPECIALTIES[:3])}...")
         
         total_before = len(self.providers)
         
-        # Scrape from Yelp
-        if self.yelp_api_key:
-            logger.info("\n--- Scraping Yelp ---")
-            for specialty in specialties_to_search:
-                for state in states_to_search[:3]:  # Yelp rate limiting
-                    self.scrape_yelp(specialty, state)
-                    time.sleep(1)
-        else:
-            logger.warning("Yelp API key not set. Skipping Yelp. Set YELP_API_KEY environment variable.")
+        # Scrape from Google Places with weighted distribution
+        logger.info("\n--- Scraping Google Places ---")
         
-        # Scrape from Google Places
-        if self.google_api_key:
-            logger.info("\n--- Scraping Google Places ---")
-            for specialty in specialties_to_search:
-                self.scrape_google_places(specialty)
-                time.sleep(1)
-        else:
-            logger.warning("Google Maps API key not set. Skipping Google Places. Set GOOGLE_MAPS_API_KEY environment variable.")
-        
-        if not self.google_api_key and not self.yelp_api_key:
-            logger.error("\nERROR: No API keys configured!")
-            logger.error("Set GOOGLE_MAPS_API_KEY and/or YELP_API_KEY environment variables.")
-            logger.error("\nGet API keys from:")
-            logger.error("  - Google Maps: https://cloud.google.com/maps-platform")
-            logger.error("  - Yelp: https://www.yelp.com/developers")
-            return
+        for state in states_to_search:
+            logger.info(f"\n=> Searching {state} ({US_STATES.get(state, state)})")
+            
+            for specialty, search_count in specialty_weights.items():
+                for i in range(search_count):
+                    try:
+                        self.scrape_google_places(specialty, state)
+                        time.sleep(1.5)  # Rate limiting
+                    except Exception as e:
+                        logger.error(f"Error scraping {specialty} in {state}: {e}")
+                        continue
         
         # Add missing coordinates via geocoding
         logger.info("\n--- Geocoding addresses ---")
+        geocoded = 0
         for provider in list(self.providers.values()):
             if not provider.latitude or not provider.longitude:
                 coords = self.geocode_address(provider.city, provider.state)
                 if coords:
                     provider.latitude, provider.longitude = coords
+                    geocoded += 1
+        
+        logger.info(f"Geocoded {geocoded} addresses")
         
         total_after = len(self.providers)
         logger.info(f"\nTotal providers collected: {total_after} (new: {total_after - total_before})")
+        
+        # Show specialty breakdown
+        specialty_counts = {}
+        for provider in self.providers.values():
+            spec = provider.specialties
+            specialty_counts[spec] = specialty_counts.get(spec, 0) + 1
+        
+        logger.info("\n--- Specialty Breakdown ---")
+        for specialty, count in sorted(specialty_counts.items(), key=lambda x: x[1], reverse=True):
+            percentage = (count / total_after * 100) if total_after > 0 else 0
+            logger.info(f"  {specialty}: {count} ({percentage:.1f}%)")
     
     def save_to_csv(self):
         """Save providers to CSV file."""
@@ -478,7 +466,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(
-        description='Scrape holistic healthcare providers from real APIs'
+        description='Scrape holistic healthcare providers from Google Maps API'
     )
     parser.add_argument(
         '--output', '-o',
@@ -493,7 +481,7 @@ def main():
     parser.add_argument(
         '--specialties', '-sp',
         nargs='+',
-        help='Limit to specific specialties (e.g., "Acupuncture" "Massage Therapy")'
+        help='Limit to specific specialties (e.g., "Functional Medicine" "Naturopathy")'
     )
     
     args = parser.parse_args()
