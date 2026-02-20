@@ -1,8 +1,7 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
-import { SessionProvider } from 'next-auth/react';
-import ProfileRedirect from '@/components/ProfileRedirect';
+import ClientProviders from '@/components/ClientProviders';
 import Head from 'next/head';
 
 const inter = Inter({
@@ -29,13 +28,11 @@ export default function RootLayout({
   return (
     <html lang="en">
       <head>
-        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
       </head>
       <body className={`${inter.variable} antialiased`}>
-        <SessionProvider>
-          <ProfileRedirect />
+        <ClientProviders>
           {children}
-        </SessionProvider>
+        </ClientProviders>
       </body>
     </html>
   );

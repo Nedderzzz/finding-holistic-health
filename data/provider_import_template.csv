@@ -1,0 +1,6 @@
+businessName,providerName,specialties,addressLine1,city,state,zip,phone,website,description,latitude,longitude,status
+Sample Health Center,Dr. John Smith,"Cardiology;Internal Medicine",123 Main Street,Springfield,IL,62701,217-555-0100,www.samplehealth.com,A comprehensive health center providing quality care,39.7817,-89.6501,PENDING
+ABC Medical Clinic,Dr. Jane Doe,"Family Medicine;Pediatrics",456 Oak Avenue,Chicago,IL,60601,312-555-0200,www.abcmedical.com,Full-service medical clinic with experienced staff,41.8781,-87.6298,PENDING
+Community Health Services,Dr. Robert Johnson,"Orthopedics;Physical Therapy",789 Elm Street,Naperville,IL,60540,630-555-0300,www.communityhealth.org,Specialized orthopedic and rehabilitation services,41.7508,-88.1535,PENDING
+Downtown Dental Practices,Dr. Sarah Williams,"Dental;Cosmetic Dentistry",321 Pine Road,Aurora,IL,60505,331-555-0400,www.downtonwndental.com,Premier dental care with modern facilities,41.7606,-88.3201,PENDING
+Suburban Health Associates,Dr. Michael Brown,"Rheumatology;Immunology",654 Maple Drive,Evanston,IL,60201,847-555-0500,www.suburbanhealth.com,Specialized rheumatology and immunology practice,42.0451,-87.6787,PENDING
